@@ -6,19 +6,61 @@ import yfinance as yf
 from flask import Flask, jsonify, Response
 
 app = Flask(__name__)
-
 KL_TZ = ZoneInfo("Asia/Kuala_Lumpur")
 
-WATCHLIST = [
-    "NVDA", "AMD", "TSLA", "PLTR", "IONQ", "RGTI", "QBTS",
-    "SOUN", "HOOD", "COIN", "MSTR", "SMCI", "AVGO", "TSM",
-    "ARM", "LUNR", "RKLB", "SOFI", "MARA", "RIOT",
-    "DXYZ", "HIMS", "BBAI", "AI", "CRWD", "NET", "PANW"
-]
+
+WATCHLIST = """
+AAPL MSFT NVDA AMD AVGO TSM ASML ARM INTC MU AMAT LRCX KLAC MRVL ON QCOM TXN
+ADI MCHP MPWR NXPI STM WOLF COHR TER ASX UMC GFS SMCI DELL HPE ANET CSCO
+PLTR AI BBAI SOUN PATH SNOW MDB DDOG ESTC HCP CFLT NOW CRM ORCL SAP TEAM
+ADBE INTU APP NET CRWD PANW ZS FTNT CYBR OKTA S TENB VRNS GEN RPD SPLK
+GOOGL GOOG META AMZN NFLX SHOP SPOT UBER LYFT DASH ABNB BKNG EXPE RBLX
+TTD ROKU PINS SNAP MTCH DUOL FVRR UPWK ETSY SE MELI BABA JD PDD BIDU TME
+TSLA RIVN LCID NIO XPEV LI F GM FSR CHPT BLNK EVGO QS STEM ENPH SEDG RUN
+FSLR BE PLUG FCEL NEE DUK SO AEP XOM CVX OXY COP SLB HAL LNG
+IONQ RGTI QBTS QUBT ARQQ
+RKLB LUNR ASTS RDW SPIR SATS IRDM MAXR
+HOOD SOFI COIN MSTR AFRM UPST PYPL SQ NU LC TREE
+MARA RIOT CLSK IREN HUT BTBT CAN WULF CIFR BITF HIVE
+HIMS TEM RXRX DNA BEAM EDIT CRSP NTLA VRTX REGN AMGN GILD BIIB MRNA BNTX
+NVAX SAVA IOVA VKTX ALT TMDX AXON ISRG SYK MDT BSX EW ZBH PODD
+LLY NVO PFE MRK JNJ ABBV BMY TMO DHR UNH CVS HUM ELV
+JPM BAC C WFC GS MS SCHW BLK BX V MA AXP DFS
+DIS CMCSA WBD PARA FOX NKE LULU SBUX MCD CMG YUM DPZ CELH MNST KO PEP
+WMT COST TGT HD LOW TJX ROST ULTA ELF
+CAT DE GE HON RTX LMT BA NOC GD ETN EMR PH MMM UPS FDX
+SPY QQQ DIA IWM TQQQ SQQQ SOXL SOXS TECL FNGU ARKK ARKW ARKG
+ZM DOCU ZI TWLO BILL HUBS WDAY PAYC NETS ALKT PCOR GTLB
+U PATH CPNG GRAB SEA BILI FUTU TIGR
+ROST TJX ANF GPS URBN CROX DECK ONON
+PANW CRWD ZS NET S FTNT CYBR OKTA TENB VRNS
+AAL DAL UAL LUV CCL RCL NCLH MAR HLT
+""".split()
 
 
 def now_kl():
     return datetime.now(KL_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def clean_df(df):
+    if df is None or df.empty:
+        return None
+
+    if hasattr(df.columns, "levels"):
+        df.columns = [c[0].lower() if isinstance(c, tuple) else str(c).lower() for c in df.columns]
+    else:
+        df.columns = [str(c).lower().replace(" ", "_") for c in df.columns]
+
+    df = df.reset_index()
+
+    df.columns = [str(c).lower().replace(" ", "_") for c in df.columns]
+
+    needed = ["open", "high", "low", "close", "volume"]
+    for col in needed:
+        if col not in df.columns:
+            return None
+
+    return df
 
 
 def fetch_data(symbol):
@@ -28,19 +70,10 @@ def fetch_data(symbol):
             period="6mo",
             interval="1d",
             auto_adjust=True,
-            progress=False
+            progress=False,
+            threads=False
         )
-
-        if df is None or df.empty:
-            return None
-
-        df = df.reset_index()
-        df.columns = [str(c).lower().replace(" ", "_") for c in df.columns]
-
-        if "close" not in df.columns:
-            return None
-
-        return df
+        return clean_df(df)
 
     except Exception as e:
         print(f"{symbol} fetch error: {e}")
@@ -89,15 +122,15 @@ def calculate_signal(df):
 def get_grade(latest):
     score = 0
 
-    trend_score = latest.get("trend_score", 0)
+    trend = latest.get("trend_score", 0)
     rvol = latest.get("rvol", 0)
     momentum = latest.get("momentum_3d_pct", 0)
     breakout = latest.get("breakout_10", False)
     range_pct = latest.get("range_pct", 0)
 
-    if trend_score >= 4:
+    if trend >= 4:
         score += 30
-    elif trend_score >= 3:
+    elif trend >= 3:
         score += 22
 
     if rvol >= 2:
@@ -153,8 +186,6 @@ def scan_four_light():
 
         score, grade = get_grade(latest)
 
-        signal = "🟢 四灯转绿 + 突破" if latest["four_light_buy"] else "🟡 四灯转绿观察"
-
         results.append({
             "symbol": symbol,
             "price": round(float(latest["close"]), 2),
@@ -166,7 +197,7 @@ def scan_four_light():
             "four_light_buy": bool(latest["four_light_buy"]),
             "score": round(float(score), 1),
             "grade": grade,
-            "signal": signal
+            "signal": "🟢 四灯转绿 + 突破" if latest["four_light_buy"] else "🟡 四灯转绿观察"
         })
 
     results.sort(key=lambda x: x["score"], reverse=True)
@@ -179,45 +210,47 @@ def home():
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <title>Four Light Scanner</title>
-    <style>
-        body {{
-            font-family: Arial, sans-serif;
-            padding: 30px;
-            background: #f5f5f5;
-        }}
-        .card {{
-            background: white;
-            padding: 20px;
-            border-radius: 12px;
-            max-width: 800px;
-            margin: auto;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-        }}
-        a {{
-            display: block;
-            padding: 12px;
-            margin: 10px 0;
-            background: #111;
-            color: white;
-            text-decoration: none;
-            border-radius: 8px;
-        }}
-    </style>
+<meta charset="UTF-8">
+<title>Niuniu Scanner</title>
+<style>
+body {{
+    font-family: Arial, sans-serif;
+    padding: 30px;
+    background: #f5f5f5;
+}}
+.card {{
+    background: white;
+    padding: 22px;
+    border-radius: 14px;
+    max-width: 850px;
+    margin: auto;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+}}
+a {{
+    display: block;
+    padding: 14px;
+    margin: 12px 0;
+    background: #111;
+    color: white;
+    text-decoration: none;
+    border-radius: 8px;
+}}
+</style>
 </head>
 <body>
-    <div class="card">
-        <h2>🟢 Four Light 美股短线扫描器</h2>
-        <p>更新时间：{now_kl()}</p>
+<div class="card">
+<h2>🟢 Niuniu Four Light Scanner</h2>
+<p>更新时间：{now_kl()}</p>
+<p>股票池数量：{len(WATCHLIST)} 只</p>
 
-        <a href="/run-four-light">运行 Four Light 扫描</a>
-        <a href="/api/four-light">JSON API</a>
-        <a href="/health">Health Check</a>
+<a href="/run-four-light">运行 Four Light 扫描</a>
+<a href="/api/four-light">JSON API</a>
+<a href="/watchlist">查看股票池</a>
+<a href="/health">Health Check</a>
 
-        <h3>扫描逻辑</h3>
-        <p>寻找：均线转强 + 动能转强 + 成交量放大 + 突破10日高点。</p>
-    </div>
+<h3>扫描逻辑</h3>
+<p>均线转强 + 动能转强 + 成交量放大 + 突破10日高点。</p>
+</div>
 </body>
 </html>
 """
@@ -228,8 +261,19 @@ def home():
 def health():
     return jsonify({
         "status": "ok",
-        "time": now_kl()
+        "time": now_kl(),
+        "watchlist_count": len(WATCHLIST)
     })
+
+
+@app.route("/watchlist")
+def watchlist():
+    lines = []
+    lines.append(f"📌 当前股票池：{len(WATCHLIST)} 只")
+    lines.append("")
+    for i, symbol in enumerate(WATCHLIST, 1):
+        lines.append(f"{i}. {symbol}")
+    return Response("\n".join(lines), mimetype="text/plain; charset=utf-8")
 
 
 @app.route("/api/four-light")
@@ -237,6 +281,7 @@ def api_four_light():
     results = scan_four_light()
     return jsonify({
         "updated_at": now_kl(),
+        "watchlist_count": len(WATCHLIST),
         "count": len(results),
         "results": results
     })
@@ -249,6 +294,7 @@ def run_four_light():
     lines = []
     lines.append("🟢 Four Light 美股短线扫描")
     lines.append(f"更新时间：{now_kl()}")
+    lines.append(f"股票池：{len(WATCHLIST)} 只")
     lines.append("")
 
     if not results:
